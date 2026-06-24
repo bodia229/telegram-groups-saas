@@ -111,6 +111,8 @@ MIN_DELAY = 1.0                                  # задержки 1–3 сек
 MAX_DELAY = 3.0
 MESSAGES_PER_GROUP = 200
 MAX_RETRIES = 3
+# Если Telegram просит ждать дольше этого (сек) — пропускаем запрос, а не висим
+FLOOD_SKIP_THRESHOLD = int(os.getenv("FLOOD_SKIP_THRESHOLD", "300"))
 
 class _TqdmLoggingHandler(logging.Handler):
     """Печатает логи через tqdm.write, чтобы не ломать прогресс-бар."""
@@ -510,8 +512,12 @@ async def safe_call(coro_func, *args, **kwargs):
         try:
             return await coro_func(*args, **kwargs)
         except FloodWaitError as e:
+            if e.seconds > FLOOD_SKIP_THRESHOLD:
+                log.warning("FloodWait %ds > порога %ds — пропускаю запрос",
+                            e.seconds, FLOOD_SKIP_THRESHOLD)
+                return None
             wait = e.seconds + random.uniform(1, 5)
-            log.warning("FloodWait: sleeping %.0fs", wait)
+            log.warning("FloodWait: жду %.0fs", wait)
             await asyncio.sleep(wait)
         except (ChannelPrivateError, UsernameInvalidError, UsernameNotOccupiedError):
             return None
@@ -640,8 +646,11 @@ class Collector:
                         for m in USERNAME_RE.findall(fname):
                             found_usernames.add(m.lower())
         except FloodWaitError as e:
-            log.warning("   FloodWait %ds при чтении %s", e.seconds, label)
-            await asyncio.sleep(e.seconds + 3)
+            if e.seconds > FLOOD_SKIP_THRESHOLD:
+                log.warning("   FloodWait %ds при чтении %s — пропускаю", e.seconds, label)
+            else:
+                log.warning("   FloodWait %ds при чтении %s — жду", e.seconds, label)
+                await asyncio.sleep(e.seconds + 3)
         except Exception as e:
             log.debug("iter_messages failed for %s: %s", ref, e)
 
