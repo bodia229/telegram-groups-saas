@@ -38,6 +38,18 @@ cp .env.example .env      # fill TG_API_ID / TG_API_HASH from https://my.telegra
 python main.py
 ```
 
+### Windows 10 — один файл
+
+Не нужна структура `app/` и установка зависимостей вручную. Просто:
+
+1. Установи **Python 3.10+** (https://www.python.org/downloads/ — поставь галочку *Add to PATH*).
+2. Запусти `telegram_groups_windows.py` двойным кликом, либо двойной клик по `run_windows.bat`,
+   либо в консоли: `python telegram_groups_windows.py`.
+3. При первом запуске введи `API_ID` / `API_HASH` (с https://my.telegram.org), затем телефон и код.
+
+Зависимости (`telethon`, `pandas`, `tqdm`, `openpyxl`) ставятся автоматически.
+Кодировка консоли и кириллица настраиваются сами. Результат — `Telegram_groups_russia.csv` / `.xlsx`.
+
 Or with Docker:
 
 ```bash
