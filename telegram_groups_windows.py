@@ -69,11 +69,21 @@ from telethon.tl.types import Channel, Chat, User
 from telethon.tl.functions.contacts import SearchRequest
 
 # ──────────────────────────────────────────────────────────────────────────────
-# CONFIG  — впиши сюда свои данные ИЛИ оставь пусто (спросит при запуске)
+# CONFIG
 # ──────────────────────────────────────────────────────────────────────────────
+#
+# API_ID / API_HASH уже вшиты (публичные креды Telegram Desktop) — ничего
+# регистрировать и вводить не нужно. При желании можно подставить свои через
+# переменные окружения TG_API_ID / TG_API_HASH (безопаснее: меньше риск бана).
+#
+# ВНИМАНИЕ: вход по номеру телефона и коду из Telegram ОБЯЗАТЕЛЕН — без этого
+# ни один user-клиент Telegram работать не может, это требование самого Telegram.
 
-API_ID = int(os.getenv("TG_API_ID", "0"))        # напр. 123456
-API_HASH = os.getenv("TG_API_HASH", "")          # напр. "abcd1234..."
+DEFAULT_API_ID = 2040
+DEFAULT_API_HASH = "b18441a1ff607e10a989891a5462e627"
+
+API_ID = int(os.getenv("TG_API_ID", str(DEFAULT_API_ID)))
+API_HASH = os.getenv("TG_API_HASH", DEFAULT_API_HASH)
 SESSION_NAME = os.getenv("TG_SESSION", "ru_groups_session")
 
 DB_PATH = "telegram_groups.db"
@@ -483,19 +493,6 @@ class Collector:
 # MAIN
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _prompt_credentials():
-    global API_ID, API_HASH
-    if not API_ID:
-        try:
-            API_ID = int(input("Введите API_ID (с https://my.telegram.org): ").strip())
-        except ValueError:
-            raise SystemExit("API_ID должен быть числом.")
-    if not API_HASH:
-        API_HASH = input("Введите API_HASH: ").strip()
-    if not API_ID or not API_HASH:
-        raise SystemExit("API_ID и API_HASH обязательны.")
-
-
 async def main():
     db = DB(DB_PATH)
     client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
@@ -512,7 +509,8 @@ async def main():
 
 
 if __name__ == "__main__":
-    _prompt_credentials()
+    print("Telegram Russian Groups Collector")
+    print("API_ID/API_HASH уже вшиты — нужен только вход по номеру телефона.\n")
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
