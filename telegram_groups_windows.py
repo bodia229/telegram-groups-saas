@@ -92,6 +92,12 @@ SESSION_NAME = os.getenv("TG_SESSION", "ru_groups_session")
 # TGStat API — токен из личного кабинета https://api.tgstat.ru (платный).
 # Если пусто — интеграция просто пропускается.
 TGSTAT_TOKEN = os.getenv("TGSTAT_TOKEN", "")
+TGSTAT_LIMIT = int(os.getenv("TGSTAT_LIMIT", "50"))          # результатов на запрос
+TGSTAT_MAX_QUERIES = int(os.getenv("TGSTAT_MAX_QUERIES", "600"))  # потолок запросов (квота!)
+
+# Бесплатные методы поиска
+SEED_SEARCH_MAX_QUERIES = int(os.getenv("SEED_SEARCH_MAX_QUERIES", "400"))  # глоб. поиск Telegram
+SEED_PATTERN_MAX = int(os.getenv("SEED_PATTERN_MAX", "400"))                # перебор username-шаблонов
 
 DB_PATH = "telegram_groups.db"
 CSV_PATH = "Telegram_groups_russia.csv"
@@ -162,6 +168,99 @@ SEED_USERNAMES = [
     "investing_chat", "auto_chat", "remont_chat", "mamochki_chat",
 ]
 
+# ~100 крупнейших городов России — основа для генерации запросов и username-шаблонов
+RU_CITIES = [
+    "Москва", "Санкт-Петербург", "Новосибирск", "Екатеринбург", "Казань",
+    "Нижний Новгород", "Челябинск", "Самара", "Уфа", "Ростов-на-Дону",
+    "Краснодар", "Омск", "Воронеж", "Пермь", "Волгоград", "Саратов",
+    "Тюмень", "Тольятти", "Барнаул", "Ижевск", "Ульяновск", "Иркутск",
+    "Хабаровск", "Махачкала", "Ярославль", "Владивосток", "Томск",
+    "Оренбург", "Кемерово", "Новокузнецк", "Рязань", "Астрахань",
+    "Пенза", "Липецк", "Тула", "Киров", "Чебоксары", "Калининград",
+    "Балашиха", "Курск", "Севастополь", "Сочи", "Ставрополь", "Улан-Удэ",
+    "Тверь", "Магнитогорск", "Иваново", "Брянск", "Белгород", "Сургут",
+    "Владимир", "Нижний Тагил", "Архангельск", "Чита", "Калуга",
+    "Смоленск", "Волжский", "Якутск", "Саранск", "Череповец", "Курган",
+    "Вологда", "Орёл", "Подольск", "Грозный", "Владикавказ", "Мурманск",
+    "Тамбов", "Стерлитамак", "Петрозаводск", "Кострома", "Нижневартовск",
+    "Новороссийск", "Йошкар-Ола", "Таганрог", "Комсомольск-на-Амуре",
+    "Сыктывкар", "Нальчик", "Шахты", "Нижнекамск", "Дзержинск", "Братск",
+    "Орск", "Ангарск", "Энгельс", "Благовещенск", "Старый Оскол",
+    "Великий Новгород", "Бийск", "Прокопьевск", "Псков", "Балаково",
+    "Армавир", "Рыбинск", "Северодвинск", "Абакан", "Норильск",
+    "Сызрань", "Каменск-Уральский", "Новочеркасск",
+]
+
+# Темы, по которым обычно создают именно ЧАТЫ (а не каналы)
+CHAT_TOPICS = [
+    "чат", "общение", "объявления", "барахолка", "подслушано", "типичный",
+    "работа", "вакансии", "аренда", "недвижимость", "знакомства",
+    "куплю продам", "новости", "афиша", "мамочки", "автолюбители",
+    "бизнес", "флудилка", "переезд", "туризм",
+]
+
+
+def build_queries(limit=None):
+    """Запросы для поиска: SEED_KEYWORDS + города×темы + темы."""
+    out, seen = [], set()
+
+    def add(q):
+        k = q.lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(q)
+
+    for kw in SEED_KEYWORDS:
+        add(kw)
+    for city in RU_CITIES:
+        add(f"{city} чат")
+        add(f"{city} объявления")
+        add(f"{city} барахолка")
+        add(f"подслушано {city}")
+        add(f"типичный {city}")
+        add(f"{city} работа")
+        add(f"{city} аренда")
+        add(f"{city} знакомства")
+    for t in CHAT_TOPICS:
+        add(t)
+    return out[:limit] if limit else out
+
+
+_TRANSLIT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "h", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+    " ": "", "-": "",
+}
+
+
+def translit(s):
+    return "".join(_TRANSLIT.get(c, c) for c in s.lower())
+
+
+def build_username_candidates(limit=None):
+    """Кандидаты публичных username по городам: moskvachat, chat_kazan, podslushano_perm …"""
+    post = ["_chat", "chat", "_obyavleniya", "_baraholka", "_news", "_work", "_official"]
+    pre = ["chat_", "podslushano_", "tipich_", "afisha_", "rabota_", "arenda_", "news_"]
+    out, seen = [], set()
+
+    def add(u):
+        if u and 5 <= len(u) <= 32 and u.lower() not in seen:
+            seen.add(u.lower())
+            out.append(u)
+
+    for city in RU_CITIES:
+        t = translit(city)
+        if not t:
+            continue
+        for s in post:
+            add(f"{t}{s}")
+        for s in pre:
+            add(f"{s}{t}")
+    return out[:limit] if limit else out
+
 # ──────────────────────────────────────────────────────────────────────────────
 # CITY DETECTION
 # ──────────────────────────────────────────────────────────────────────────────
@@ -204,6 +303,7 @@ CITY_MAP = {
 }
 
 USERNAME_RE = re.compile(r"(?:@|t\.me/|telegram\.me/)([A-Za-z][A-Za-z0-9_]{3,31})")
+INVITE_RE = re.compile(r"(?:t\.me/joinchat/|t\.me/\+|telegram\.me/joinchat/)([A-Za-z0-9_-]{8,})")
 
 
 def detect_city(*texts):
@@ -453,12 +553,12 @@ class Collector:
         return is_new
 
     async def seed_search(self):
-        log.info("🔎 Seed-поиск стартовал: %d ключевых слов", len(SEED_KEYWORDS))
-        for i, kw in enumerate(SEED_KEYWORDS, 1):
-            if self.db.count_groups() >= SEED_TARGET:
-                log.info("Достигнут SEED_TARGET=%d — seed-поиск остановлен", SEED_TARGET)
+        queries = build_queries(SEED_SEARCH_MAX_QUERIES)
+        log.info("🔎 Глоб. поиск Telegram (бесплатно): %d запросов", len(queries))
+        for i, kw in enumerate(queries, 1):
+            if self.db.count_groups() >= TARGET_GROUPS:
                 break
-            log.info("🔎 [%d/%d] Поиск по запросу: «%s»", i, len(SEED_KEYWORDS), kw)
+            log.info("🔎 [%d/%d] Поиск по запросу: «%s»", i, len(queries), kw)
             result = await safe_call(self.client, SearchRequest(q=kw, limit=100))
             if not result:
                 log.info("   ничего не найдено / лимит")
@@ -522,11 +622,14 @@ class Collector:
             description = None
 
         found_usernames = set()
+        invite_hashes = set()
         try:
             async for msg in self.client.iter_messages(entity, limit=MESSAGES_PER_GROUP):
                 if msg.message:
                     for m in USERNAME_RE.findall(msg.message):
                         found_usernames.add(m.lower())
+                    for h in INVITE_RE.findall(msg.message):
+                        invite_hashes.add(h)
                 fwd = msg.forward
                 if fwd is not None:
                     fchat = getattr(fwd, "chat", None)
@@ -542,8 +645,21 @@ class Collector:
         except Exception as e:
             log.debug("iter_messages failed for %s: %s", ref, e)
 
-        log.info("   %s: просканировал сообщения, найдено упоминаний: %d",
-                 label, len(found_usernames))
+        log.info("   %s: упоминаний %d, invite-ссылок %d",
+                 label, len(found_usernames), len(invite_hashes))
+
+        # invite-ссылки: резолвим, что доступно без вступления (уже участник)
+        for h in invite_hashes:
+            if self.db.count_groups() >= TARGET_GROUPS:
+                break
+            res = await safe_call(
+                self.client, functions.messages.CheckChatInviteRequest(hash=h)
+            )
+            chat = getattr(res, "chat", None) if res is not None else None
+            if chat is not None and classify(chat):
+                await self.register(chat, source="invite")
+            await asyncio.sleep(random.uniform(0.3, 0.8))
+
         for uname in found_usernames:
             if self.db.count_groups() >= TARGET_GROUPS:
                 break
@@ -579,13 +695,14 @@ class Collector:
         if not TGSTAT_TOKEN:
             log.info("ℹ️ TGStat не подключён (нет TGSTAT_TOKEN) — пропускаю.")
             return
-        log.info("📡 TGStat: ищу чаты по %d запросам…", len(SEED_KEYWORDS))
+        queries = build_queries(TGSTAT_MAX_QUERIES)
+        log.info("📡 TGStat: ищу чаты по %d запросам…", len(queries))
         before = self.db.count_groups()
         seen = set()
-        for kw in SEED_KEYWORDS:
-            if self.db.count_groups() >= SEED_TARGET:
+        for kw in queries:
+            if self.db.count_groups() >= TARGET_GROUPS:
                 break
-            items = await tgstat_search(TGSTAT_TOKEN, kw)
+            items = await tgstat_search(TGSTAT_TOKEN, kw, limit=TGSTAT_LIMIT)
             usernames = []
             for it in items:
                 u = _username_from_item(it)
@@ -619,6 +736,23 @@ class Collector:
             await asyncio.sleep(random.uniform(0.5, 1.2))
         log.info("🌱 По списку добавлено: %d", self.db.count_groups() - before)
 
+    async def seed_from_patterns(self):
+        cands = build_username_candidates(SEED_PATTERN_MAX)
+        log.info("🧩 Перебор username-шаблонов (бесплатно): %d кандидатов", len(cands))
+        before = self.db.count_groups()
+        for u in cands:
+            if self.db.count_groups() >= TARGET_GROUPS:
+                break
+            ent = await safe_call(self.client.get_entity, u)
+            if ent is None:
+                continue
+            if classify(ent):
+                await self.register(ent, source="pattern")
+            elif isinstance(ent, Channel) and ent.broadcast:
+                await self.try_linked_group(ent, source="pattern")
+            await asyncio.sleep(random.uniform(0.4, 1.0))
+        log.info("🧩 По шаблонам добавлено: %d", self.db.count_groups() - before)
+
     async def seed_from_dialogs(self):
         log.info("📂 Засев из твоих диалогов…")
         before = self.db.count_groups()
@@ -646,11 +780,13 @@ class Collector:
                          desc="Groups", unit="grp")
         log.info("🚀 Старт. Цель: %d групп. Воркеров: %d", TARGET_GROUPS, WORKERS)
         hb = asyncio.create_task(self.heartbeat())
-        await self.seed_from_dialogs()
+        # ── Источники (бесплатные) ──
+        await self.seed_from_dialogs()      # твои диалоги
+        await self.seed_from_usernames()    # известные чаты
+        await self.seed_from_patterns()     # перебор username-шаблонов
+        await self.seed_search()            # глоб. поиск Telegram (города×темы)
+        # ── Источник (платный, если задан TGSTAT_TOKEN) ──
         await self.seed_from_tgstat()
-        await self.seed_from_usernames()
-        if self.db.count_groups() < SEED_TARGET:
-            await self.seed_search()
         log.info("🌐 Граф-расширение: запускаю %d параллельных воркеров "
                  "(в очереди %d групп)…", WORKERS, self.db.count_new_queue())
         workers = [asyncio.create_task(self.worker(i)) for i in range(WORKERS)]

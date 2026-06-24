@@ -59,6 +59,21 @@ docker compose up --build
 On first run Telethon will ask for your phone number and login code to create the
 `*.session` file. Subsequent runs resume from the SQLite state automatically.
 
+## Источники поиска чатов
+
+**Бесплатные (работают всегда):**
+- 📂 твои диалоги
+- 🌱 список известных публичных чатов (`SEED_USERNAMES`)
+- 🧩 перебор username-шаблонов по ~100 городам РФ (`moskvachat`, `chat_kazan`, `podslushano_perm`…)
+- 🔎 глобальный поиск Telegram по запросам «город × тема» (сотни комбинаций)
+- 🔗 сбор invite-ссылок (`t.me/+…`) из сообщений
+- 🌐 граф-расширение: упоминания, пересылки, чаты-обсуждения каналов
+
+**Платный (опционально):** 📡 TGStat API.
+
+Потолки (env): `SEED_SEARCH_MAX_QUERIES` (400), `SEED_PATTERN_MAX` (400),
+`TGSTAT_MAX_QUERIES` (600), `TGSTAT_LIMIT` (50). Снижай при FloodWait, повышай для охвата.
+
 ## TGStat (опционально)
 
 Глобальный поиск Telegram отдаёт мало результатов. Чтобы быстрее набрать стартовую
