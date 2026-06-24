@@ -59,6 +59,21 @@ docker compose up --build
 On first run Telethon will ask for your phone number and login code to create the
 `*.session` file. Subsequent runs resume from the SQLite state automatically.
 
+## TGStat (опционально)
+
+Глобальный поиск Telegram отдаёт мало результатов. Чтобы быстрее набрать стартовую
+базу чатов по России, можно подключить **TGStat API**:
+
+1. Получи токен в личном кабинете https://api.tgstat.ru (платный сервис).
+2. Задай переменную окружения `TGSTAT_TOKEN` (или впиши в `.env`).
+
+Тогда на старте отработает `seed_from_tgstat()`: возьмёт чаты из TGStat по ключам,
+прогонит через фильтр (группы оставит, у каналов возьмёт чат-обсуждение) и
+закинет в очередь графа. Без токена шаг просто пропускается.
+
+> TGStat не вступает в чаты и не отдаёт сообщения — он даёт список юзернеймов,
+> которые затем резолвит и расширяет Telethon.
+
 ## Output
 
 - `Telegram_groups_russia.csv`

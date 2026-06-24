@@ -48,10 +48,13 @@ _ensure_deps()
 
 import re
 import csv
+import json
 import random
 import asyncio
 import logging
 import sqlite3
+import urllib.parse
+import urllib.request
 from datetime import datetime
 
 import pandas as pd
@@ -85,6 +88,10 @@ DEFAULT_API_HASH = "b18441a1ff607e10a989891a5462e627"
 API_ID = int(os.getenv("TG_API_ID", str(DEFAULT_API_ID)))
 API_HASH = os.getenv("TG_API_HASH", DEFAULT_API_HASH)
 SESSION_NAME = os.getenv("TG_SESSION", "ru_groups_session")
+
+# TGStat API — токен из личного кабинета https://api.tgstat.ru (платный).
+# Если пусто — интеграция просто пропускается.
+TGSTAT_TOKEN = os.getenv("TGSTAT_TOKEN", "")
 
 DB_PATH = "telegram_groups.db"
 CSV_PATH = "Telegram_groups_russia.csv"
@@ -361,6 +368,39 @@ def entity_to_row(entity, etype, source, description=None):
 # RATE-LIMIT / RETRY
 # ──────────────────────────────────────────────────────────────────────────────
 
+async def tgstat_search(token, query, country="ru", limit=50):
+    """Поиск чатов/каналов в TGStat. Возвращает список item-словарей."""
+    params = urllib.parse.urlencode({
+        "token": token,
+        "q": query,
+        "country": country,
+        "limit": limit,
+    })
+    url = "https://api.tgstat.ru/channels/search?" + params
+
+    def _do():
+        req = urllib.request.Request(url, headers={"User-Agent": "collector/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode("utf-8"))
+
+    try:
+        data = await asyncio.to_thread(_do)
+    except Exception as e:
+        log.warning("TGStat запрос упал (%s): %s", query, e)
+        return []
+    if data.get("status") != "ok":
+        log.warning("TGStat ответ не ok по «%s»: %s", query, str(data)[:200])
+        return []
+    return data.get("response", {}).get("items", [])
+
+
+def _username_from_item(it):
+    u = (it.get("username") or "").lstrip("@")
+    if not u and it.get("link"):
+        u = it["link"].rstrip("/").split("/")[-1].lstrip("@")
+    return u or None
+
+
 async def jitter():
     await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
 
@@ -535,6 +575,36 @@ class Collector:
                 log.debug("worker %d error: %s", name, e)
                 await self.db.mark_processed(group_id)
 
+    async def seed_from_tgstat(self):
+        if not TGSTAT_TOKEN:
+            log.info("ℹ️ TGStat не подключён (нет TGSTAT_TOKEN) — пропускаю.")
+            return
+        log.info("📡 TGStat: ищу чаты по %d запросам…", len(SEED_KEYWORDS))
+        before = self.db.count_groups()
+        seen = set()
+        for kw in SEED_KEYWORDS:
+            if self.db.count_groups() >= SEED_TARGET:
+                break
+            items = await tgstat_search(TGSTAT_TOKEN, kw)
+            usernames = []
+            for it in items:
+                u = _username_from_item(it)
+                if u and u.lower() not in seen:
+                    seen.add(u.lower())
+                    usernames.append(u)
+            log.info("📡 TGStat «%s»: кандидатов %d", kw, len(usernames))
+            for u in usernames:
+                ent = await safe_call(self.client.get_entity, u)
+                if ent is None:
+                    continue
+                if classify(ent):
+                    await self.register(ent, source="tgstat")
+                elif isinstance(ent, Channel) and ent.broadcast:
+                    await self.try_linked_group(ent, source="tgstat")
+                await asyncio.sleep(random.uniform(0.3, 0.8))
+            await asyncio.sleep(1)
+        log.info("📡 TGStat: добавлено групп %d", self.db.count_groups() - before)
+
     async def seed_from_usernames(self):
         log.info("🌱 Засев по списку известных чатов: %d шт.", len(SEED_USERNAMES))
         before = self.db.count_groups()
@@ -577,6 +647,7 @@ class Collector:
         log.info("🚀 Старт. Цель: %d групп. Воркеров: %d", TARGET_GROUPS, WORKERS)
         hb = asyncio.create_task(self.heartbeat())
         await self.seed_from_dialogs()
+        await self.seed_from_tgstat()
         await self.seed_from_usernames()
         if self.db.count_groups() < SEED_TARGET:
             await self.seed_search()
