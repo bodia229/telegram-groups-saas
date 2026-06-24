@@ -99,12 +99,22 @@ MAX_DELAY = 3.0
 MESSAGES_PER_GROUP = 200
 MAX_RETRIES = 3
 
+class _TqdmLoggingHandler(logging.Handler):
+    """Печатает логи через tqdm.write, чтобы не ломать прогресс-бар."""
+    def emit(self, record):
+        try:
+            tqdm.write(self.format(record))
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
     handlers=[
         logging.FileHandler("collector.log", encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
+        _TqdmLoggingHandler(),
     ],
 )
 log = logging.getLogger("collector")
@@ -379,29 +389,43 @@ class Collector:
         row = entity_to_row(entity, etype, source, description)
         is_new = await self.db.upsert_group(row)
         await self.db.enqueue(entity.id, row["username"])
-        if is_new and self.pbar:
-            self.pbar.n = self.db.count_groups()
-            self.pbar.refresh()
+        if is_new:
+            total = self.db.count_groups()
+            uname = f"@{row['username']}" if row["username"] else "—"
+            city = row["city"] or "?"
+            log.info("➕ [%s] %s | %s | %s | source=%s | всего: %d",
+                     etype, (row["title"] or "")[:40], uname, city, source, total)
+            if self.pbar:
+                self.pbar.n = total
+                self.pbar.refresh()
         return is_new
 
     async def seed_search(self):
-        log.info("Seed search started (%d keywords)…", len(SEED_KEYWORDS))
-        for kw in SEED_KEYWORDS:
+        log.info("🔎 Seed-поиск стартовал: %d ключевых слов", len(SEED_KEYWORDS))
+        for i, kw in enumerate(SEED_KEYWORDS, 1):
             if self.db.count_groups() >= SEED_TARGET:
+                log.info("Достигнут SEED_TARGET=%d — seed-поиск остановлен", SEED_TARGET)
                 break
+            log.info("🔎 [%d/%d] Поиск по запросу: «%s»", i, len(SEED_KEYWORDS), kw)
             result = await safe_call(self.client, SearchRequest(q=kw, limit=100))
             if not result:
+                log.info("   ничего не найдено / лимит")
                 await jitter()
                 continue
+            before = self.db.count_groups()
             for chat in result.chats:
                 await self.register(chat, source="seed")
+            log.info("   по «%s» добавлено новых: %d", kw, self.db.count_groups() - before)
             await jitter()
-        log.info("Seed search done. Collected: %d", self.db.count_groups())
+        log.info("✅ Seed-поиск завершён. Собрано групп: %d", self.db.count_groups())
 
     async def process_group(self, group_id, username):
         ref = username or group_id
+        label = f"@{username}" if username else f"id={group_id}"
+        log.info("🔄 Обрабатываю группу %s …", label)
         entity = await safe_call(self.client.get_entity, ref)
         if entity is None or classify(entity) is None:
+            log.info("   пропуск %s (недоступна / не группа)", label)
             await self.db.mark_processed(group_id)
             return
 
@@ -436,10 +460,13 @@ class Collector:
                         for m in USERNAME_RE.findall(fname):
                             found_usernames.add(m.lower())
         except FloodWaitError as e:
+            log.warning("   FloodWait %ds при чтении %s", e.seconds, label)
             await asyncio.sleep(e.seconds + 3)
         except Exception as e:
             log.debug("iter_messages failed for %s: %s", ref, e)
 
+        log.info("   %s: просканировал сообщения, найдено упоминаний: %d",
+                 label, len(found_usernames))
         for uname in found_usernames:
             if self.db.count_groups() >= TARGET_GROUPS:
                 break
@@ -452,11 +479,13 @@ class Collector:
         await jitter()
 
     async def worker(self, name):
+        log.info("👷 Воркер #%d запущен", name)
         while self.db.count_groups() < TARGET_GROUPS:
             batch = await self.db.next_batch(1)
             if not batch:
                 await asyncio.sleep(5)
                 if self.db.count_new_queue() == 0:
+                    log.info("👷 Воркер #%d: очередь пуста, завершаюсь", name)
                     return
                 continue
             group_id, username = batch[0]
@@ -467,26 +496,33 @@ class Collector:
                 await self.db.mark_processed(group_id)
 
     async def seed_from_dialogs(self):
+        log.info("📂 Засев из твоих диалогов…")
+        before = self.db.count_groups()
         try:
             async for dialog in self.client.iter_dialogs():
                 ent = dialog.entity
                 if classify(ent):
                     row = entity_to_row(ent, classify(ent), "seed")
-                    await self.db.upsert_group(row)
+                    if await self.db.upsert_group(row):
+                        log.info("➕ [%s] %s (из диалогов)", row["type"], (row["title"] or "")[:40])
                     await self.db.enqueue(ent.id, row["username"])
         except Exception as e:
             log.debug("dialog seeding skipped: %s", e)
+        log.info("📂 Из диалогов добавлено: %d", self.db.count_groups() - before)
 
     async def run(self):
         self.pbar = tqdm(total=TARGET_GROUPS, initial=self.db.count_groups(),
                          desc="Groups", unit="grp")
+        log.info("🚀 Старт. Цель: %d групп. Воркеров: %d", TARGET_GROUPS, WORKERS)
         await self.seed_from_dialogs()
         if self.db.count_groups() < SEED_TARGET:
             await self.seed_search()
-        log.info("Graph expansion with %d workers…", WORKERS)
+        log.info("🌐 Граф-расширение: запускаю %d параллельных воркеров "
+                 "(в очереди %d групп)…", WORKERS, self.db.count_new_queue())
         workers = [asyncio.create_task(self.worker(i)) for i in range(WORKERS)]
         await asyncio.gather(*workers)
         self.pbar.close()
+        log.info("🏁 Сбор завершён. Итого групп: %d", self.db.count_groups())
 
 
 # ──────────────────────────────────────────────────────────────────────────────
