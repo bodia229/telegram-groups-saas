@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Secrets / sessions
+.env
+*.session
+*.session-journal
+
+# Data / DB / exports
+*.db
+*.db-wal
+*.db-shm
+*.csv
+*.xlsx
+collector.log
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
