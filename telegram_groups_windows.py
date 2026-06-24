@@ -115,6 +115,8 @@ MAX_RETRIES = 3
 FLOOD_SKIP_THRESHOLD = int(os.getenv("FLOOD_SKIP_THRESHOLD", "300"))
 # Максимум секунд на ОДНУ группу. Дольше — бросаем и идём к следующей
 GROUP_TIMEOUT = int(os.getenv("GROUP_TIMEOUT", "90"))
+# Как часто (сек) выгружать найденное в CSV/XLSX по ходу работы
+AUTOSAVE_EVERY = int(os.getenv("AUTOSAVE_EVERY", "60"))
 
 class _TqdmLoggingHandler(logging.Handler):
     """Печатает логи через tqdm.write, чтобы не ломать прогресс-бар."""
@@ -792,11 +794,23 @@ class Collector:
             log.info("💓 Жив: групп %d | в очереди %d",
                      self.db.count_groups(), self.db.count_new_queue())
 
+    async def autosave(self):
+        """Периодически выгружает найденное в CSV/XLSX, чтобы не терять прогресс."""
+        while True:
+            await asyncio.sleep(AUTOSAVE_EVERY)
+            try:
+                n = self.db.export()
+                log.info("💾 Автосохранение: %d групп → %s / %s",
+                         n, CSV_PATH, XLSX_PATH)
+            except Exception as e:
+                log.warning("Автосохранение не удалось: %s", e)
+
     async def run(self):
         self.pbar = tqdm(total=TARGET_GROUPS, initial=self.db.count_groups(),
                          desc="Groups", unit="grp")
         log.info("🚀 Старт. Цель: %d групп. Воркеров: %d", TARGET_GROUPS, WORKERS)
         hb = asyncio.create_task(self.heartbeat())
+        save = asyncio.create_task(self.autosave())
         # ── Источники (бесплатные) ──
         await self.seed_from_dialogs()      # твои диалоги
         await self.seed_from_usernames()    # известные чаты
@@ -809,6 +823,7 @@ class Collector:
         workers = [asyncio.create_task(self.worker(i)) for i in range(WORKERS)]
         await asyncio.gather(*workers)
         hb.cancel()
+        save.cancel()
         self.pbar.close()
         log.info("🏁 Сбор завершён. Итого групп: %d", self.db.count_groups())
 
