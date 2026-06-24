@@ -113,6 +113,8 @@ MESSAGES_PER_GROUP = 200
 MAX_RETRIES = 3
 # Если Telegram просит ждать дольше этого (сек) — пропускаем запрос, а не висим
 FLOOD_SKIP_THRESHOLD = int(os.getenv("FLOOD_SKIP_THRESHOLD", "300"))
+# Максимум секунд на ОДНУ группу. Дольше — бросаем и идём к следующей
+GROUP_TIMEOUT = int(os.getenv("GROUP_TIMEOUT", "90"))
 
 class _TqdmLoggingHandler(logging.Handler):
     """Печатает логи через tqdm.write, чтобы не ломать прогресс-бар."""
@@ -695,7 +697,13 @@ class Collector:
                 continue
             group_id, username = batch[0]
             try:
-                await self.process_group(group_id, username)
+                await asyncio.wait_for(
+                    self.process_group(group_id, username), timeout=GROUP_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                log.warning("⏭ Группа %s дольше %dс — бросаю, иду к следующей",
+                            username or group_id, GROUP_TIMEOUT)
+                await self.db.mark_processed(group_id)
             except Exception as e:
                 log.debug("worker %d error: %s", name, e)
                 await self.db.mark_processed(group_id)
