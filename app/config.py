@@ -22,6 +22,3 @@ MIN_DELAY = float(os.getenv("MIN_DELAY", "1.0"))
 MAX_DELAY = float(os.getenv("MAX_DELAY", "3.0"))
 MESSAGES_PER_GROUP = int(os.getenv("MESSAGES_PER_GROUP", "200"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
-
-# API
-API_KEY = os.getenv("API_KEY", "")  # optional bearer token to protect the SaaS API
