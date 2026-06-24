@@ -143,6 +143,18 @@ SEED_KEYWORDS = [
     "фриланс чат", "дизайн чат", "айти чат", "разработка чат",
 ]
 
+# Известные публичные чаты/каталоги — гарантированные точки входа для графа.
+# Если какой-то не существует — get_entity вернёт None, это не страшно.
+SEED_USERNAMES = [
+    "ru_python", "pythonchatru", "ru_python_beginners",
+    "natandev", "tproger_chat", "devschat", "JavaScript_ru",
+    "moscow", "spb", "ru", "chat", "obyavleniya", "rabota",
+    "arenda_msk", "rabota_moskva", "nedvizhimost_chat",
+    "baraholka", "kupiprodai", "znakomstva_chat",
+    "freelance", "smm_chat", "marketing_chat", "crypto_ru",
+    "investing_chat", "auto_chat", "remont_chat", "mamochki_chat",
+]
+
 # ──────────────────────────────────────────────────────────────────────────────
 # CITY DETECTION
 # ──────────────────────────────────────────────────────────────────────────────
@@ -413,11 +425,36 @@ class Collector:
                 await jitter()
                 continue
             before = self.db.count_groups()
+            raw = len(result.chats)
+            channels = 0
             for chat in result.chats:
-                await self.register(chat, source="seed")
-            log.info("   по «%s» добавлено новых: %d", kw, self.db.count_groups() - before)
+                added = await self.register(chat, source="seed")
+                # глобальный поиск возвращает много каналов — берём их чат-обсуждение
+                if isinstance(chat, Channel) and chat.broadcast:
+                    channels += 1
+                    await self.try_linked_group(chat, source="seed")
+            log.info("   по «%s»: получено %d чатов, добавлено групп %d (каналов %d)",
+                     kw, raw, self.db.count_groups() - before, channels)
             await jitter()
         log.info("✅ Seed-поиск завершён. Собрано групп: %d", self.db.count_groups())
+
+    async def try_linked_group(self, channel, source):
+        """У канала часто есть привязанная группа-обсуждение (supergroup) — берём её."""
+        try:
+            full = await safe_call(
+                self.client,
+                functions.channels.GetFullChannelRequest(channel=channel),
+            )
+            if not full:
+                return
+            linked_id = getattr(full.full_chat, "linked_chat_id", None)
+            if not linked_id:
+                return
+            for ch in full.chats:
+                if ch.id == linked_id and classify(ch):
+                    await self.register(ch, source=source)
+        except Exception:
+            pass
 
     async def process_group(self, group_id, username):
         ref = username or group_id
@@ -472,7 +509,10 @@ class Collector:
                 break
             new_entity = await safe_call(self.client.get_entity, uname)
             if new_entity is not None:
-                await self.register(new_entity, source="graph")
+                if classify(new_entity):
+                    await self.register(new_entity, source="graph")
+                elif isinstance(new_entity, Channel) and new_entity.broadcast:
+                    await self.try_linked_group(new_entity, source="graph")
             await asyncio.sleep(random.uniform(0.3, 1.0))
 
         await self.db.mark_processed(group_id)
@@ -495,6 +535,20 @@ class Collector:
                 log.debug("worker %d error: %s", name, e)
                 await self.db.mark_processed(group_id)
 
+    async def seed_from_usernames(self):
+        log.info("🌱 Засев по списку известных чатов: %d шт.", len(SEED_USERNAMES))
+        before = self.db.count_groups()
+        for uname in SEED_USERNAMES:
+            ent = await safe_call(self.client.get_entity, uname)
+            if ent is None:
+                continue
+            if classify(ent):
+                await self.register(ent, source="seed")
+            elif isinstance(ent, Channel) and ent.broadcast:
+                await self.try_linked_group(ent, source="seed")
+            await asyncio.sleep(random.uniform(0.5, 1.2))
+        log.info("🌱 По списку добавлено: %d", self.db.count_groups() - before)
+
     async def seed_from_dialogs(self):
         log.info("📂 Засев из твоих диалогов…")
         before = self.db.count_groups()
@@ -510,17 +564,27 @@ class Collector:
             log.debug("dialog seeding skipped: %s", e)
         log.info("📂 Из диалогов добавлено: %d", self.db.count_groups() - before)
 
+    async def heartbeat(self):
+        """Каждые 10 сек показывает, что процесс жив, даже если групп пока 0."""
+        while True:
+            await asyncio.sleep(10)
+            log.info("💓 Жив: групп %d | в очереди %d",
+                     self.db.count_groups(), self.db.count_new_queue())
+
     async def run(self):
         self.pbar = tqdm(total=TARGET_GROUPS, initial=self.db.count_groups(),
                          desc="Groups", unit="grp")
         log.info("🚀 Старт. Цель: %d групп. Воркеров: %d", TARGET_GROUPS, WORKERS)
+        hb = asyncio.create_task(self.heartbeat())
         await self.seed_from_dialogs()
+        await self.seed_from_usernames()
         if self.db.count_groups() < SEED_TARGET:
             await self.seed_search()
         log.info("🌐 Граф-расширение: запускаю %d параллельных воркеров "
                  "(в очереди %d групп)…", WORKERS, self.db.count_new_queue())
         workers = [asyncio.create_task(self.worker(i)) for i in range(WORKERS)]
         await asyncio.gather(*workers)
+        hb.cancel()
         self.pbar.close()
         log.info("🏁 Сбор завершён. Итого групп: %d", self.db.count_groups())
 
